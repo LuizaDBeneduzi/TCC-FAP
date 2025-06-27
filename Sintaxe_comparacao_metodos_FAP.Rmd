@@ -1,0 +1,1138 @@
+---
+title: "Análises de PAF para problemas cognitivos no ELSA"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Nesta análise o PAF será calculado utilizando o método de Norton (2014) (doi: 10.1016/S1474-4422(14)70136-X) e Mukadam (2019) (doi: 10.1016/S2214-109X(19)30074-9). Outros métodos são utilizados para comparação: Levin, Mietnen, Niedhammer, e o do averisk.
+
+Algumas definições utilizadas nesta análise:
+- O ponto de corte usado para definir déficit é Z < -1,5
+- Se constrói o z de cada teste apenas usando a média e DP do teste, sem ajuste
+- O z global é a média dos três domínios e não dos seis testes
+- Exclui-se indivíduos com déficit no baseline; após isso calcula-se as prevalências dos fatores de risco
+- Na onda 3 utiliza-se as mesmas médias e DP de cada teste no baseline
+- Os RRs são ajustados por idade do baseline e sexo, e tem baixa escolaridade como fator de risco (sem duplo ajuste)
+- Todos os PAFs já foram dados em percentuais
+
+```{r prepara, echo = F}
+library(haven)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+
+bd <- read_sav("bancoLuiza.sav")
+```
+
+## Tabelas 1, 2 e 3
+```{r a1, echo = F}
+
+library(gtsummary)
+# print("Tabela 1 - Prevalências dos fatores de risco e desfecho")
+bdmodelo = na.omit(subset(bd, select=c(IDELSA, zglobalscore1.5 , inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)))
+
+
+library(geepack)
+
+bdmodelo$idseq = as.numeric(as.factor(bdmodelo$IDELSA)) #Tranforma o ID
+
+bdmodelo = bdmodelo[order(bdmodelo$idseq), ] #ordena
+
+mfull = geeglm(zglobalscore1.5 ~ inativ + depressao + tabaco + alcool + obes + baixa_escol + diabetes + ha, family= poisson(link="log"), data = bdmodelo, id=idseq)
+
+
+```
+
+
+
+## Funções FAP Norton e Niedhammer 
+
+
+```{r}
+library(psych)
+
+calcula_fap_norton = function(dados, indice){
+  
+  amostra = dados[indice, ]
+  
+  mfull = geeglm(zglobalscore1.5 ~ inativ + depressao + tabaco + alcool + obes + baixa_escol + diabetes + ha, family= poisson(link="log"), data = amostra, id=idseq)
+  
+  rrs = exp(mfull$coefficients[-1])[1:8] # CALCULA RR
+  
+prevs = apply(subset(amostra, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)), 2, sum)/dim(bdmodelo)[1] # CALCULA PREVALENCIA DO FATOR DE RISCO
+
+# Calcula a PAF de Levin para depois calcular a PAF de Norton
+
+a <- prevs * ( rrs - 1)
+
+paf.levin = a/(1+a)
+
+##################################################
+
+  correl = tetrachoric(subset(amostra, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha))) 
+  ncps = sum(eigen(correl$rho)$values > 1)
+  porpsych = psych::principal(subset(amostra, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)), nfactors = ncps , rotate = 'none', cor = "tet")  # CALCULA COMUNALIDADE
+
+  comm = porpsych$communality
+
+pesos = 1 - comm 
+paf.norton =  1 - prod(1 - pesos*paf.levin)
+
+return(paf.norton)
+  
+}
+
+###########################################################################
+
+
+calcula_fap_niedhamer = function(dados, indice){
+  
+  amostra = dados[indice, ]
+  
+  mfull = geeglm(zglobalscore1.5 ~ inativ + depressao + tabaco + alcool + obes + baixa_escol + diabetes + ha, family= poisson(link="log"), data = amostra, id=idseq)
+  
+  rrs = exp(mfull$coefficients[-1])[1:8] # CALCULA RR
+  
+prevs = apply(subset(amostra, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)), 2, sum)/dim(bdmodelo)[1] # CALCULA PREVALENCIA DO FATOR DE RISCO
+
+# Calcula a PAF de Levin para depois calcular a PAF de Norton
+
+a <- prevs * ( rrs - 1)
+
+paf.levin = a/(1+a)
+
+##################################################
+
+  correl = tetrachoric(subset(amostra, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha))) 
+
+correl.sem1 = correl$rho
+correl.sem1[correl.sem1 == 1] = NA
+#correl.sem1
+
+medias.correl = apply(correl.sem1, 2, mean, na.rm=T)
+#medias.correl
+
+pesos2 = 1 - medias.correl
+paf.nied =  1 - prod(1 - pesos2*paf.levin)
+
+return(paf.nied)  
+}
+```
+
+# Função que faz as reamostras bootstrap e estima as faps 
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(boot)
+
+set.seed(123)
+resultado_boot_norton = boot(data = bdmodelo, statistic = calcula_fap_norton, R = 1000)
+resultado_boot_nied = boot(data = bdmodelo, statistic = calcula_fap_niedhamer, R = 1000)
+
+
+boot_nied = resultado_boot_nied$t * 100
+boot_norton = resultado_boot_norton$t * 100
+
+boot_concat = data.frame(
+  boot_norton,
+  boot_nied
+)
+
+mean(boot_nied)
+mean(boot_nor)
+
+boot_longo = tidyr::pivot_longer(boot_concat, cols = everything(), names_to = "variavel", values_to = "Valor")
+
+boot_longo = boot_longo |>
+  mutate(
+    variavel2 = case_when(
+      variavel %in% c("boot_norton") ~ "Norton",
+      variavel %in% c("boot_nied") ~ "Niedhammer"
+    )
+  )
+
+#vies e eqm
+fap_real = 0.458765582 * 100	
+
+vies_boot_nied = mean(boot_nied) - (fap_real)
+vies_boot_norton = mean(boot_norton - fap_real)
+
+eqm_boot_nied = var(boot_nied) + vies_boot_nied^2
+eqm_boot_norton = var(boot_norton) + vies_boot_norton^2
+
+#grafico
+
+# plot = ggplot(boot_longo, aes(x = variavel2, y = Valor, fill = variavel2)) +
+#   geom_boxplot() +
+#   stat_summary(
+#     fun = mean, 
+#     geom = "point", 
+#     color = "red",  
+#     size = 3
+#   ) +
+#   scale_y_continuous(
+#     limits = c(0, 60),
+#     labels = scales::percent_format(scale = 1) 
+#   ) +
+#   geom_hline(
+#     yintercept = 45.8765582,
+#     color = "brown", 
+#     linetype = "solid",
+#     linewidth = 1
+#   ) + 
+#   labs(
+#     x = " ",
+#     y = "FAP Estimada",
+#     title = " "
+#   ) +
+#   theme_minimal() +
+#   theme(legend.position = "none") +
+#   scale_fill_brewer(palette = "Pastel1")
+# 
+# print(plot)
+
+
+library(ggplot2)
+library(scales)
+
+# Defina os breaks do eixo y conforme desejado
+breaks_y <- c(0, 20, 40, 45.88, 60)
+# Nome que você quer na legenda
+nome_legenda <- "Parâmetro"
+
+# Gráfico
+plot <- ggplot(boot_longo, aes(x = variavel2, y = Valor, fill = variavel2)) +
+  geom_boxplot() +
+
+  # Linha de referência com legenda como "parâmetro"
+  geom_hline(aes(yintercept = 45.8765582, color = nome_legenda), 
+             linetype = "solid", linewidth = 1) +
+
+  # Média com ponto e legenda
+  stat_summary(
+    fun = mean, 
+    geom = "point", 
+    aes(shape = "Média"), 
+    size = 2.5,
+    fill = "red"
+  ) +
+
+  # Eixo y com breaks
+  scale_y_continuous(
+    limits = c(0, 60),
+    breaks = breaks_y,
+    labels = scales::percent_format(scale = 1)
+  ) +
+
+  labs(
+    x = "",
+    y = "FAP Estimada",
+    title = "",
+    fill = "Método",
+    color = NULL,
+    shape = NULL
+  ) +
+
+  # Definindo a legenda da cor como "parâmetro"
+  scale_color_manual(
+    values = setNames("black", nome_legenda),
+    breaks = nome_legenda
+  ) +
+
+  scale_shape_manual(
+    values = c("Média" = 21),
+    breaks = c("Média")
+  ) +
+
+  scale_fill_brewer(palette = "Pastel1") +
+
+  theme_minimal() +
+  theme(legend.position = "right")
+
+plot
+
+
+```
+
+# Função que faz as amostras sem reposição e calcula as faps 
+
+```{r}
+
+calcula_fap_norton_2 = function(dados){
+
+  mfull = geeglm(zglobalscore1.5 ~ inativ + depressao + tabaco + alcool + obes + baixa_escol + diabetes + ha, family= poisson(link="log"), data = dados, id=idseq)
+  
+  rrs = exp(mfull$coefficients[-1])[1:8] # CALCULA RR
+  
+prevs = apply(subset(dados, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)), 2, sum)/nrow(dados) # CALCULA PREVALENCIA DO FATOR DE RISCO
+
+# Calcula a PAF de Levin para depois calcular a PAF de Norton
+
+a <- prevs * ( rrs - 1)
+
+paf.levin = a/(1+a)
+
+  correl = tetrachoric(subset(dados, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha))) 
+  ncps = sum(eigen(correl$rho)$values > 1)
+  porpsych = psych::principal(subset(dados, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)), nfactors = ncps , rotate = 'none', cor = "tet")  # CALCULA COMUNALIDADE
+
+  comm = porpsych$communality
+
+pesos = 1 - comm 
+paf.norton =  1 - prod(1 - pesos*paf.levin)
+
+return(paf.norton)
+  
+}
+######################################################################################
+
+calcula_fap_niedhamer_2 = function(dados){
+  
+  mfull = geeglm(zglobalscore1.5 ~ inativ + depressao + tabaco + alcool + obes + baixa_escol + diabetes + ha, family= poisson(link="log"), data = dados, id=idseq)
+  
+  rrs = exp(mfull$coefficients[-1])[1:8] # CALCULA RR
+  
+prevs = apply(subset(dados, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha)), 2, sum)/nrow(dados) # CALCULA PREVALENCIA DO FATOR DE RISCO
+
+# Calcula a PAF de Levin para depois calcular a PAF de Norton
+
+a <- prevs * ( rrs - 1)
+
+paf.levin = a/(1+a)
+
+  correl = tetrachoric(subset(dados, select=c(inativ , depressao , tabaco , alcool , obes , baixa_escol , diabetes, ha))) 
+
+correl.sem1 = correl$rho
+correl.sem1[correl.sem1 == 1] = NA
+#correl.sem1
+
+medias.correl = apply(correl.sem1, 2, mean, na.rm=T)
+#medias.correl
+
+pesos2 = 1 - medias.correl
+paf.nied =  1 - prod(1 - pesos2*paf.levin)
+
+return(paf.nied)  
+}
+
+
+reamostra_funcao = function(data, N, n_reamostras, funcao) {
+  
+  resultados = numeric(n_reamostras)
+  
+  for (i in 1:n_reamostras) {
+    reamostra = data[sample(1:nrow(data), N, replace = FALSE), ]
+    resultados[i] = funcao(reamostra)
+  }
+  
+  return(resultados)  
+}
+
+set.seed(123)
+
+resultado_norton_2500 = reamostra_funcao(data = bdmodelo, N = 2500, n_reamostras = 1000, funcao =calcula_fap_norton_2)
+
+resultado_norton_5000 = reamostra_funcao(data = bdmodelo, N = 5000, n_reamostras = 1000, funcao = calcula_fap_norton_2)
+
+resultado_norton_7500 = reamostra_funcao(data = bdmodelo, N = 7500, n_reamostras = 1000, funcao = calcula_fap_norton_2)
+
+resultado_nied_2500 = reamostra_funcao(data = bdmodelo, N = 2500, n_reamostras = 1000, funcao = calcula_fap_niedhamer_2)
+
+resultado_nied_5000 = reamostra_funcao(data = bdmodelo, N = 5000, n_reamostras = 1000, funcao = calcula_fap_niedhamer_2)
+
+resultado_nied_7500 = reamostra_funcao(data = bdmodelo, N = 7500, n_reamostras = 1000, funcao = calcula_fap_niedhamer_2)
+
+amostragem_concat_total = data.frame(
+  resultado_norton_2500,
+  resultado_norton_5000, 
+  resultado_norton_7500,
+  resultado_nied_2500,
+  resultado_nied_5000, 
+  resultado_nied_7500
+)
+
+c(mean(resultado_norton_2500), mean(resultado_norton_5000), mean(resultado_norton_7500))
+c(mean(resultado_nied_2500), mean(resultado_nied_5000), mean(resultado_nied_7500))
+
+rbind(c(mean(resultado_norton_2500), mean(resultado_norton_5000), mean(resultado_norton_7500))
+,c(mean(resultado_nied_2500), mean(resultado_nied_5000), mean(resultado_nied_7500))
+)
+```
+
+
+
+
+# Transforma em dados longo pra fazer os boxplots 
+
+```{r}
+library(scales)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(gridExtra)
+
+dados_longo = amostragem_concat_total |>
+  pivot_longer(cols = everything(), names_to = "variavel", values_to = "valor") |>
+  mutate(
+    grupo = case_when(
+      variavel %in% c("resultado_norton_2500", "resultado_nied_2500") ~ "N = 2500",
+      variavel %in% c("resultado_norton_5000", "resultado_nied_5000") ~ "N = 5000",
+      variavel %in% c("resultado_norton_7500", "resultado_nied_7500") ~ "N = 7500"
+    )
+  )
+
+dados_longo = dados_longo |>
+  mutate(
+    variavel2 = case_when(
+      variavel %in% c("resultado_norton_2500", "resultado_norton_5000", "resultado_norton_7500") ~ "Norton",
+      variavel %in% c("resultado_nied_2500", "resultado_nied_5000", "resultado_nied_7500") ~ "Niedhammer"
+    )
+  )
+
+```
+
+
+```{r}
+breaks_y <- c(0, 0.2, 0.4, 0.4588, 0.6)
+plot1 = ggplot(
+  dados_longo |> filter(grupo == "N = 2500"),
+  aes(x = variavel2, y = valor, fill = variavel)
+) +
+  geom_boxplot() +
+  stat_summary(
+    fun = mean,
+geom = "point", 
+    color = "red", 
+    size = 3
+  ) +
+      scale_y_continuous(
+    limits = c(0, 0.6),
+    breaks = breaks_y,
+    labels = percent
+  ) +
+  geom_hline(
+    yintercept = 0.458765582, 
+    color = "brown", 
+    linetype = "solid",
+    linewidth = 1
+  ) +
+  labs(
+    x = " ",
+    y = "FAP Estimada",
+    title = "N = 2500"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(size = 14),  # tamanho dos valores do eixo X
+    axis.text.y = element_text(size = 13),  # tamanho dos valores do eixo Y
+    axis.title.x = element_text(size = 10), # se quiser aumentar o título do eixo X
+    axis.title.y = element_text(size = 12)  # se quiser aumentar o título do eixo Y
+  )
+
+plot2 = ggplot(
+  dados_longo |> filter(grupo == "N = 5000"),
+  aes(x = variavel2, y = valor, fill = variavel)
+) +
+  geom_boxplot() +
+  stat_summary(
+    fun = mean, 
+    geom = "point", 
+    color = "red", 
+    size = 3
+  ) +
+      scale_y_continuous(
+    limits = c(0, 0.6),
+        breaks = breaks_y,
+    labels = percent
+  ) +
+  geom_hline(
+    yintercept = 0.458765582, 
+    color = "brown", 
+    linetype = "solid",
+    linewidth = 1
+  ) +
+  labs(
+    x = " ",
+    y = " ",
+    title = "N = 5000"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(size = 14),  # tamanho dos valores do eixo X
+    axis.text.y = element_text(size = 13),  # tamanho dos valores do eixo Y
+    axis.title.x = element_text(size = 10), # se quiser aumentar o título do eixo X
+    axis.title.y = element_text(size = 12)  # se quiser aumentar o título do eixo Y
+  )
+
+plot3 = ggplot(
+  dados_longo |> filter(grupo == "N = 7500"),
+  aes(x = variavel2, y = valor, fill = variavel)
+) +
+  geom_boxplot() +
+  stat_summary(
+    fun = mean, 
+    geom = "point", 
+    color = "red", 
+    size = 3
+  ) +
+    scale_y_continuous(
+    limits = c(0, 0.6),
+        breaks = breaks_y,
+    labels = percent
+  ) +
+geom_hline(
+    yintercept = 0.458765582, 
+    color = "brown", 
+    linetype = "solid", 
+    linewidth = 1
+  ) +
+  labs(
+    x = " ",
+    y = " ",
+    title = "N = 7500"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(size = 14),  # tamanho dos valores do eixo X
+    axis.text.y = element_text(size = 13),  # tamanho dos valores do eixo Y
+    axis.title.x = element_text(size = 10), # se quiser aumentar o título do eixo X
+    axis.title.y = element_text(size = 12)  # se quiser aumentar o título do eixo Y
+  )
+
+plots = grid.arrange(plot1, plot2, plot3, ncol = 3)
+
+```
+
+
+# Calcula viés e EQM
+
+```{r}
+
+dados_pct = amostragem_concat_total * 100
+
+fap_real = 0.458765582 * 100	
+  
+vies_norton_2500 = mean(dados_pct$resultado_norton_2500 - fap_real)
+vies_norton_5000 = mean(dados_pct$resultado_norton_5000 - fap_real)
+vies_norton_7500 = mean(dados_pct$resultado_norton_7500 - fap_real)
+
+vies_nied_2500 = mean(dados_pct$resultado_nied_2500 - fap_real)
+vies_nied_5000 = mean(dados_pct$resultado_nied_5000 - fap_real)
+vies_nied_7500 = mean(dados_pct$resultado_nied_7500 - fap_real)
+
+eqm_norton_2500 = var(dados_pct$resultado_norton_2500) + vies_norton_2500^2
+eqm_norton_5000 = var(dados_pct$resultado_norton_5000) + vies_norton_5000^2
+eqm_norton_7500 = var(dados_pct$resultado_norton_7500) + vies_norton_7500^2
+
+eqm_nied_2500 = var(dados_pct$resultado_nied_2500) + vies_nied_2500^2
+eqm_nied_5000 = var(dados_pct$resultado_nied_5000) + vies_nied_5000^2
+eqm_nied_7500 = var(dados_pct$resultado_nied_7500) + vies_nied_7500^2
+
+cbind(vies_norton_2500, vies_norton_5000, vies_norton_7500)
+cbind(vies_nied_2500, vies_nied_5000, vies_nied_7500)
+
+cbind(eqm_norton_2500, eqm_norton_5000, eqm_norton_7500)
+cbind(eqm_nied_2500, eqm_nied_5000, eqm_nied_7500)
+
+```
+
+
+
+
+#### Parte 3, apenas com diabetes e hipertensao
+
+## ajusta a funçao da parte 3 - simulação para o metodo de Norton
+
+```{r}
+# CALCULA NORTON
+
+calcula_fap_norton_3 = function(dados){
+
+  mfull = geeglm(zglobalscore1.5 ~ diabetes + ha, family= poisson(link="log"), data = dados, id=idseq)
+  
+  rrs = exp(mfull$coefficients[-1])[1:2] # CALCULA RR
+  
+prevs = apply(subset(dados, select=c(diabetes, ha)), 2, sum)/nrow(dados) # CALCULA PREVALENCIA DO FATOR DE RISCO
+
+# Calcula a PAF de Levin para depois calcular a PAF de Norton
+
+a <- prevs * ( rrs - 1)
+
+paf.levin = a/(1+a)
+
+  correl = tetrachoric(subset(dados, select=c(diabetes, ha))) 
+  ncps = sum(eigen(correl$rho)$values > 1)
+  porpsych = psych::principal(subset(dados, select=c(diabetes, ha)), nfactors = ncps , rotate = 'none', cor = "tet")  
+  
+  # CALCULA COMUNALIDADE
+
+  comm = porpsych$communality
+
+pesos = 1 - comm 
+paf.norton =  1 - prod(1 - pesos*paf.levin)
+
+return(paf.norton)
+  
+}
+
+```
+
+
+
+## Aplica simulação para o metodo de Niedhammer
+
+```{r}
+
+calcula_fap_niedhamer_3 = function(dados){
+  
+  mfull = geeglm(zglobalscore1.5 ~ diabetes + ha, family= poisson(link="log"), data = dados, id=idseq)
+  
+  rrs = exp(mfull$coefficients[-1])[1:2] # CALCULA RR
+  
+prevs = apply(subset(dados, select=c(diabetes, ha)), 2, sum)/nrow(dados) # CALCULA PREVALENCIA DO FATOR DE RISCO
+
+# Calcula a PAF de Levin para depois calcular a PAF de Norton
+
+a <- prevs * ( rrs - 1)
+
+paf.levin = a/(1+a)
+
+  correl = tetrachoric(subset(dados, select=c(diabetes, ha))) 
+
+correl.sem1 = correl$rho
+correl.sem1[correl.sem1 == 1] = NA
+#correl.sem1
+
+medias.correl = apply(correl.sem1, 2, mean, na.rm=T)
+#medias.correl
+
+pesos2 = 1 - medias.correl
+paf.nied =  1 - prod(1 - pesos2*paf.levin)
+
+return(paf.nied)  
+}
+```
+
+# Aplica os 3 metodos para o banco original 
+
+```{r}
+library(gtsummary)
+bd3 = na.omit(subset(bd, select=c(IDELSA, zglobalscore1.5 , diabetes, ha)))
+bd3$idseq = as.numeric(as.factor(bd3$IDELSA)) 
+
+library(averisk)
+matriz = as.matrix(bd3[,-c(1,5)])
+tabela = getAF(zglobalscore1.5 ~ diabetes + ha, the.data = matriz, ci=TRUE, conf_level = 0.95)
+norton = calcula_fap_norton_3(bd3[,-1])
+niedhammer = calcula_fap_niedhamer_3(bd3[,-1])
+
+
+bd3$grupo = interaction(bd3$diabetes, bd3$ha)
+props = prop.table(table(bd3$grupo))
+ 
+table(bd3$zglobalscore1.5,bd3$grupo)
+probs = prop.table(table(bd3$grupo, bd3$zglobalscore1.5),1)[,2]
+probs
+
+
+```
+
+
+
+## Simulação para n = 2500 
+
+```{r}
+lista_2500 = vector("list", 1000)
+lista_5000 = vector("list", 1000)
+lista_7500 = vector("list", 1000)
+
+set.seed(335032)
+
+resultados_fap_2500 = data.frame(simulacao = 1:1000,
+                             fap_norton = NA,
+                             fap_niedhamer = NA)
+
+for (i in 1:1000) {
+  n = 2500
+  ngrupo = round(props * n, 0)
+  
+  bdsim = data.frame(grupo = rep(c("0.0", "1.0", "0.1", "1.1"), ngrupo))
+  bdsim$diabetes = ifelse(bdsim$grupo %in% c("0.0", "0.1"), 0, 1)
+  bdsim$ha = ifelse(bdsim$grupo %in% c("0.0", "1.0"), 0, 1)
+  bdsim$zglobalscore1.5 = NA
+  bdsim$zglobalscore1.5[bdsim$grupo == "0.0"] = rbinom(ngrupo[1], 1, probs[1])
+  bdsim$zglobalscore1.5[bdsim$grupo == "1.0"] = rbinom(ngrupo[2], 1, probs[2])
+  bdsim$zglobalscore1.5[bdsim$grupo == "0.1"] = rbinom(ngrupo[3], 1, probs[3])
+  bdsim$zglobalscore1.5[bdsim$grupo == "1.1"] = rbinom(ngrupo[4], 1, probs[4])
+  bdsim$idseq = 1:n
+
+  simulacao_2500 = as.matrix(bdsim[, c("zglobalscore1.5", "diabetes", "ha")])
+  
+  tabela_2500 = getAF(zglobalscore1.5 ~ diabetes + ha, the.data = simulacao_2500, ci = TRUE, conf_level = 0.95)
+  
+  df_sim = as.data.frame(tabela_2500)
+  df_sim$linha = rownames(df_sim)
+  df_sim$simulacao = i
+  rownames(df_sim) = NULL
+
+  lista_2500[[i]] = df_sim
+
+  fap_norton = calcula_fap_norton_3(bdsim)
+
+  fap_niedhamer = calcula_fap_niedhamer_3(bdsim)
+
+  resultados_fap_2500[i, "fap_norton"] = fap_norton
+  resultados_fap_2500[i, "fap_niedhamer"] = fap_niedhamer}
+
+  avrisk_2500 = do.call(rbind, lista_2500)
+
+  
+```
+
+## Simulação para n = 5000 
+
+```{r}
+
+set.seed(335032)
+
+resultados_fap_5000 = data.frame(simulacao = 1:1000,
+                             fap_norton = NA,
+                             fap_niedhamer = NA)
+
+for (i in 1:1000) {
+  
+  n = 5000
+
+  ngrupo = floor(props * n)
+  diff = n - sum(ngrupo)
+
+  residuos = props * n - ngrupo
+  indices = order(residuos, decreasing = TRUE)[1:diff]
+  ngrupo[indices] = ngrupo[indices] + 1
+
+  bdsim = data.frame(grupo = rep(c("0.0", "1.0", "0.1", "1.1"), ngrupo))
+  bdsim$diabetes = ifelse(bdsim$grupo %in% c("0.0", "0.1"), 0, 1)
+  bdsim$ha = ifelse(bdsim$grupo %in% c("0.0", "1.0"), 0, 1)
+  bdsim$zglobalscore1.5 = NA
+  bdsim$zglobalscore1.5[bdsim$grupo == "0.0"] = rbinom(ngrupo[1], 1, probs[1])
+  bdsim$zglobalscore1.5[bdsim$grupo == "1.0"] = rbinom(ngrupo[2], 1, probs[2])
+  bdsim$zglobalscore1.5[bdsim$grupo == "0.1"] = rbinom(ngrupo[3], 1, probs[3])
+  bdsim$zglobalscore1.5[bdsim$grupo == "1.1"] = rbinom(ngrupo[4], 1, probs[4])
+
+  bdsim$idseq = 1:n
+
+  simulacao_5000 = as.matrix(bdsim[, c("zglobalscore1.5", "diabetes", "ha")])
+  
+  tabela_5000 = getAF(zglobalscore1.5 ~ diabetes + ha, the.data = simulacao_5000, ci = TRUE, conf_level = 0.95)
+  
+  df_sim = as.data.frame(tabela_5000)
+  df_sim$linha = rownames(df_sim)
+  df_sim$simulacao = i
+  rownames(df_sim) = NULL
+
+  lista_5000[[i]] = df_sim
+
+  fap_norton = calcula_fap_norton_3(bdsim)
+
+  fap_niedhamer = calcula_fap_niedhamer_3(bdsim)
+
+  resultados_fap_5000[i, "fap_norton"] = fap_norton
+  resultados_fap_5000[i, "fap_niedhamer"] = fap_niedhamer}
+
+   avrisk_5000 = do.call(rbind, lista_5000)
+  
+```
+
+## Simulação para n = 7500
+
+```{r}
+
+set.seed(335032)
+
+resultados_fap_7500 = data.frame(simulacao = 1:1000,
+                             fap_norton = NA,
+                             fap_niedhamer = NA)
+
+for (i in 1:1000) {
+  n = 7500
+  ngrupo = round(props * n, 0)
+  
+  bdsim = data.frame(grupo = rep(c("0.0", "1.0", "0.1", "1.1"), ngrupo))
+  bdsim$diabetes = ifelse(bdsim$grupo %in% c("0.0", "0.1"), 0, 1)
+  bdsim$ha = ifelse(bdsim$grupo %in% c("0.0", "1.0"), 0, 1)
+  bdsim$zglobalscore1.5 = NA
+  bdsim$zglobalscore1.5[bdsim$grupo == "0.0"] = rbinom(ngrupo[1], 1, probs[1])
+  bdsim$zglobalscore1.5[bdsim$grupo == "1.0"] = rbinom(ngrupo[2], 1, probs[2])
+  bdsim$zglobalscore1.5[bdsim$grupo == "0.1"] = rbinom(ngrupo[3], 1, probs[3])
+  bdsim$zglobalscore1.5[bdsim$grupo == "1.1"] = rbinom(ngrupo[4], 1, probs[4])
+
+  bdsim$idseq = 1:n
+
+  simulacao_7500 = as.matrix(bdsim[, c("zglobalscore1.5", "diabetes"  , "ha")])
+  
+  tabela_7500 = getAF(zglobalscore1.5 ~ diabetes + ha, the.data = simulacao_7500, ci = TRUE, conf_level = 0.95)
+  
+  df_sim = as.data.frame(tabela_7500)
+  df_sim$linha = rownames(df_sim)
+  df_sim$simulacao = i
+  rownames(df_sim) = NULL
+
+  lista_7500[[i]] = df_sim
+
+  fap_norton = calcula_fap_norton_3(bdsim)
+
+  fap_niedhamer = calcula_fap_niedhamer_3(bdsim)
+
+  resultados_fap_7500[i, "fap_norton"] = fap_norton
+  resultados_fap_7500[i, "fap_niedhamer"] = fap_niedhamer}
+
+  avrisk_7500 = do.call(rbind, lista_7500)
+  
+```
+
+
+#CALCULA EQM E VIES SIMULAÇÕES 
+
+```{r}
+
+# 
+
+concatena_avrisk_estimativas = data.frame(
+  diabetes_2500 = avrisk_2500$diabetes,
+  ha_2500 = avrisk_2500$ha,
+  total_2500 = avrisk_2500$total,
+  filtro = avrisk_2500$linha,
+  
+  diabetes_5000 = avrisk_5000$diabetes,
+  ha_5000 = avrisk_5000$ha,
+  total_5000 = avrisk_5000$total,
+
+  diabetes_7500 = avrisk_7500$diabetes,  
+  ha_7500 = avrisk_7500$ha,
+  total_7500 = avrisk_7500$total
+
+  
+)
+
+concatena_avrisk_estimativas =concatena_avrisk_estimativas |>
+  filter(str_trim(filtro) == "estimate")
+
+
+
+fap_avrisk_diabetes = 0.09 *100 #FAPAMA
+fap_avrisk_ha = 0.25 *100 #FAPAMB
+fap_total = 0.339 * 100
+
+
+vies_avrisk_diabetes_2500 = mean((avrisk_2500$diabetes*100) - fap_avrisk_diabetes)
+vies_avrisk_diabetes_5000 = mean((avrisk_5000$diabetes*100) - fap_avrisk_diabetes)
+vies_avrisk_diabetes_7500 = mean((avrisk_7500$diabetes*100) - fap_avrisk_diabetes)
+
+vies_avrisk_ha_2500 = mean((avrisk_2500$ha*100) - fap_avrisk_ha)
+vies_avrisk_ha_5000 = mean((avrisk_5000$ha*100) - fap_avrisk_ha)
+vies_avrisk_ha_7500 = mean((avrisk_7500$ha*100) - fap_avrisk_ha)
+
+vies_avrisk_total_2500 = mean((avrisk_2500$total*100) - fap_total)
+vies_avrisk_total_5000 = mean((avrisk_5000$total*100) - fap_total)
+vies_avrisk_total_7500 = mean((avrisk_7500$total*100) - fap_total)
+
+
+eqm_avrisk_diabetes_2500 = var(avrisk_2500$diabetes*100) + vies_avrisk_diabetes_2500^2
+eqm_avrisk_diabetes_5000 = var(avrisk_5000$diabetes*100) + vies_avrisk_diabetes_5000^2
+eqm_avrisk_diabetes_7500 = var(avrisk_7500$diabetes*100) + vies_avrisk_diabetes_7500^2
+
+eqm_avrisk_ha_2500 = var(avrisk_2500$ha*100) + vies_avrisk_ha_2500^2 
+eqm_avrisk_ha_5000 = var(avrisk_5000$ha*100) + vies_avrisk_ha_5000^2
+eqm_avrisk_ha_7500 = var(avrisk_7500$ha*100) + vies_avrisk_ha_7500^2
+
+eqm_avrisk_total_2500 = var(avrisk_2500$total*100) + vies_avrisk_total_2500^2
+eqm_avrisk_total_5000 = var(avrisk_5000$total*100) + vies_avrisk_total_5000^2
+eqm_avrisk_total_7500 = var(avrisk_7500$total*100) + vies_avrisk_total_7500^2
+
+
+rbind(vies_avrisk_ha_2500, vies_avrisk_ha_5000, vies_avrisk_ha_7500)
+rbind(vies_avrisk_diabetes_2500, vies_avrisk_diabetes_5000, vies_avrisk_diabetes_7500)
+
+rbind(eqm_avrisk_diabetes_2500, eqm_avrisk_diabetes_5000, eqm_avrisk_diabetes_7500)
+rbind(eqm_avrisk_ha_2500, eqm_avrisk_ha_5000, eqm_avrisk_ha_7500)
+
+
+rbind(vies_avrisk_total_2500, vies_avrisk_total_5000, vies_avrisk_total_7500)
+rbind(vies_norton_total_2500, vies_norton_total_5000, vies_norton_total_7500)
+rbind(vies_nied_total_2500, vies_nied_total_5000, vies_nied_total_7500)
+
+rbind(eqm_avrisk_total_2500, eqm_avrisk_total_5000, eqm_avrisk_total_7500)
+rbind(eqm_norton_total_2500, eqm_norton_total_5000, eqm_norton_total_7500)
+rbind(eqm_nied_total_2500, eqm_nied_total_5000, eqm_nied_total_7500)
+### VIES E EQM NORTON
+
+vies_norton_total_2500 = mean((simula_2500$fap_norton*100) - fap_total)
+vies_norton_total_5000 = mean((simula_5000$fap_norton*100) - fap_total)
+vies_norton_total_7500 = mean((simula_7500$fap_norton*100) - fap_total)
+
+eqm_norton_total_2500 = var(simula_2500$fap_norton*100) + vies_norton_total_2500^2
+eqm_norton_total_5000 = var(simula_5000$fap_norton*100) + vies_norton_total_5000^2
+eqm_norton_total_7500 = var(simula_7500$fap_norton*100) + vies_norton_total_7500^2
+
+### VIES E EQM NIEDHAMMER
+
+
+vies_nied_total_2500 = mean((simula_2500$fap_niedhamer*100) - fap_total)
+vies_nied_total_5000 = mean((simula_5000$fap_niedhamer*100) - fap_total)
+vies_nied_total_7500 = mean((simula_7500$fap_niedhamer*100) - fap_total)
+
+eqm_nied_total_2500 = var(simula_2500$fap_niedhamer*100) + vies_nied_total_2500^2
+eqm_nied_total_5000 = var(simula_5000$fap_niedhamer*100) + vies_nied_total_5000^2
+eqm_nied_total_7500 = var(simula_7500$fap_niedhamer*100) + vies_nied_total_7500^2
+
+```
+
+#plots
+
+
+```{r}
+
+# tabelas para depois tranformar no formato longo e fazer os boxplots
+
+medias_faps_totais = data.frame(
+  ruck2500 = mean(concatena_avrisk_estimativas$total_2500),
+  norton2500 = mean(simula_2500$fap_norton),
+  nied2500 = mean(simula_2500$fap_niedhamer),
+  
+  ruck500 = mean(concatena_avrisk_estimativas$total_5000),
+  norton500 = mean(simula_5000$fap_norton),
+  nied500 = mean(simula_5000$fap_niedhamer),
+  
+    ruck7500 = mean(concatena_avrisk_estimativas$total_7500),
+  norton7500 = mean(simula_7500$fap_norton),
+  nied7500 = mean(simula_7500$fap_niedhamer)
+)
+
+total = data.frame(
+  avrisk_2500 = concatena_avrisk_estimativas$total_2500,
+  norton_2500 = simula_2500$fap_norton,
+  niedhammer_2500 = simula_2500$fap_niedhamer,
+  
+  avrisk_5000 = concatena_avrisk_estimativas$total_5000,
+  norton_5000 = simula_5000$fap_norton,
+  niedhammer_5000 = simula_5000$fap_niedhamer,
+  
+  avrisk_7500 = concatena_avrisk_estimativas$total_7500,
+  norton_7500 = simula_7500$fap_norton,
+  niedhammer_7500 = simula_7500$fap_niedhamer
+)
+
+diabetes = data.frame(
+  diabetes_2500 = concatena_avrisk_estimativas$diabetes_2500,
+  diabetes_5000 = concatena_avrisk_estimativas$diabetes_5000,
+  diabetes_7500 = concatena_avrisk_estimativas$diabetes_7500
+)
+
+
+
+ha = data.frame(
+  ha_2500 = concatena_avrisk_estimativas$ha_2500,
+  ha_5000 = concatena_avrisk_estimativas$ha_5000,
+  ha_7500 = concatena_avrisk_estimativas$ha_7500
+)
+
+media_ha = data.frame(
+  mean(concatena_avrisk_estimativas$ha_2500),
+  mean(concatena_avrisk_estimativas$ha_5000),
+  mean(concatena_avrisk_estimativas$ha_7500)
+  
+  
+  
+)
+
+print(media_diabetes)
+print(media_ha)
+```
+
+
+## total
+
+```{r, fig.width=9, fig.height=5}
+
+
+dados_long = total %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("metodo", "tamanho"),
+    names_pattern = "(.*)_(.*)",
+    values_to = "valor"
+  )
+
+dados_long = dados_long %>%
+  mutate(
+    metodo = recode(metodo,
+                    "avrisk" = "Ruckinger",
+                    "norton" = "Norton",
+                    "niedhammer" = "Niedhammer"),
+    metodo = factor(metodo, levels = c("Ruckinger", "Niedhammer", "Norton"))
+  )
+
+dados_long$tamanho = factor(dados_long$tamanho, levels = c("2500", "5000", "7500"))
+
+
+facet_labels = c("2500" = "N = 2500",
+                  "5000" = "N = 5000",
+                  "7500" = "N = 7500")
+
+breaks_y = c(0, 0.1, 0.2, 0.339, 0.4, 0.5)
+
+ggplot(dados_long, aes(x = metodo, y = valor, fill = metodo)) +
+  geom_boxplot() +
+  geom_hline(aes(yintercept = 0.339, color = "Valor referência"), linetype = "dashed", size = 1) +
+  stat_summary(
+    fun = mean, 
+    geom = "point", 
+    aes(shape = "Média"), 
+    size = 2.5,
+    fill = "red"
+  ) +
+  facet_wrap(~ tamanho, nrow = 1, labeller = labeller(tamanho = facet_labels)) +
+  labs(
+    title = "",
+    x = "",
+    y = "FAP Estimada",
+    fill = "Método",
+    color = NULL,
+    shape = NULL
+  ) +
+  scale_y_continuous(
+    breaks = breaks_y,
+    labels = percent_format(accuracy = 1)
+  ) +
+  scale_color_manual(
+    values = c("Valor referência" = "black", "Média" = "red"),
+    breaks = c("Valor referência", "Média")
+  ) +
+  scale_shape_manual(
+    values = c("Média" = 21),
+    breaks = c("Média")
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+
+```
+
+## diabetes
+
+```{r}
+
+longo_dia = diabetes %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "tamanho_amostra",
+    values_to = "valor"
+  )
+
+labels_amostra = c(
+  "diabetes_2500" = "N = 2500",
+  "diabetes_5000" = "N = 5000",
+  "diabetes_7500" = "N = 7500"
+)
+
+breaks_dia = c(0, 0.05, 0.09, 0.15, 0.2)
+
+ggplot(longo_dia, aes(x = tamanho_amostra, y = valor)) +  
+  geom_boxplot(aes(fill = tamanho_amostra), show.legend = FALSE) +
+  geom_hline(aes(yintercept = 0.09, color = "Valor de Referência"), linetype = "dashed", size = 1) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    aes(shape = "Média"),
+    size = 2.5,
+    fill = "red"
+  ) +
+  scale_y_continuous(
+    breaks = breaks_dia,
+    labels = percent_format(accuracy = 1)
+  ) +
+  scale_x_discrete(labels = labels_amostra) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Valor de Referência" = "black", "Média" = "red"),
+    breaks = c("Valor de Referência", "Média")
+  ) +
+  scale_shape_manual(
+    name = NULL,
+    values = c("Média" = 21),
+    breaks = c("Média")
+  ) +
+  labs(
+    x = "",
+    y = "FAP Estimada"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+
+
+```
+
+
+## HA 
+
+```{r}
+longo_ha = ha %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "tamanho_amostra",
+    values_to = "valor"
+  )
+
+labels_amostra = c(
+  "ha_2500" = "N = 2500",
+  "ha_5000" = "N = 5000",
+  "ha_7500" = "N = 7500"
+)
+
+breaks_ha <- c(0, 0.1, 0.2,0.25, 0.3, 0.4)
+
+ggplot(longo_ha, aes(x = tamanho_amostra, y = valor)) +  
+  geom_boxplot(aes(fill = tamanho_amostra), show.legend = FALSE) +
+  geom_hline(aes(yintercept = 0.25, color = "Parâmetro"), linetype = "dashed", size = 1) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    aes(shape = "Média"),
+    size = 2.5,
+    fill = "red"
+  ) +
+  scale_y_continuous(
+    breaks = breaks_ha,
+    labels = percent_format(accuracy = 1)
+  ) +
+  scale_x_discrete(labels = labels_amostra) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Parâmetro" = "black", "Média" = "red"),
+    breaks = c("Parâmetro", "Média")
+  ) +
+  scale_shape_manual(
+    name = NULL,
+    values = c("Média" = 21),
+    breaks = c("Média")
+  ) +
+  labs(
+    x = "",
+    y = "FAP Estimada"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+```
+
+
+
